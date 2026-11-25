@@ -40,10 +40,47 @@ export async function setRemote(cwd: string, url: string, name = "origin") {
   await gitOk(cwd, existing ? ["remote", "set-url", name, url] : ["remote", "add", name, url]);
 }
 
-/** Parse owner/repo out of https or ssh GitHub remotes. */
+/**
+ * Parse owner/repo out of GitHub remotes: https, ssh (git@github.com:o/r), ssh:// and
+ * ~/.ssh/config aliases whose name contains "github" (git@github-work:o/r).
+ */
 export function parseGithubRemote(url: string): { owner: string; repo: string } | null {
-  const m = url.match(/github\.com[:/]([^/]+)\/([^/]+?)(?:\.git)?\/?$/i);
+  const m = url.match(/github[\w.-]*[:/]([^/:]+)\/([^/]+?)(?:\.git)?\/?$/i);
   return m ? { owner: m[1]!, repo: m[2]! } : null;
+}
+
+export interface GithubRemote {
+  name: string;
+  url: string;
+  owner: string;
+  repo: string;
+}
+
+/** Every remote that points at GitHub, whatever it is called (origin, main, github, ...). */
+export async function githubRemotes(cwd: string): Promise<GithubRemote[]> {
+  const r = await git(cwd, ["remote"]);
+  if (r.code !== 0) return [];
+  const out: GithubRemote[] = [];
+  for (const name of r.stdout.split("\n").map((s) => s.trim()).filter(Boolean)) {
+    const url = await remoteUrl(cwd, name);
+    const parsed = url ? parseGithubRemote(url) : null;
+    if (url && parsed) out.push({ name, url, ...parsed });
+  }
+  // origin first, the rest in git's order
+  return out.sort((a, b) => Number(b.name === "origin") - Number(a.name === "origin"));
+}
+
+/**
+ * Name of the local remote for owner/repo. If no remote points there yet, one is added
+ * (as "origin" if that name is free, otherwise "github").
+ */
+export async function remoteFor(cwd: string, owner: string, repo: string): Promise<string> {
+  const same = (x: GithubRemote) => x.owner.toLowerCase() === owner.toLowerCase() && x.repo.toLowerCase() === repo.toLowerCase();
+  const found = (await githubRemotes(cwd)).find(same);
+  if (found) return found.name;
+  const name = (await remoteUrl(cwd, "origin")) ? "github" : "origin";
+  await setRemote(cwd, `https://github.com/${owner}/${repo}.git`, name);
+  return name;
 }
 
 export async function dirtyFiles(cwd: string) {
@@ -68,19 +105,19 @@ export async function headSha(cwd: string) {
 }
 
 /** Push using the token as an HTTP auth header, so it works regardless of local credential helpers. */
-export async function push(cwd: string, branch: string, token: string, onOutput: (c: string) => void) {
-  const url = await remoteUrl(cwd);
+export async function push(cwd: string, remote: string, branch: string, token: string, onOutput: (c: string) => void) {
+  const url = await remoteUrl(cwd, remote);
   const isHttps = !!url && url.startsWith("https://");
   const basic = Buffer.from(`x-access-token:${token}`).toString("base64");
   const extraConfig = isHttps ? [`http.https://github.com/.extraheader=AUTHORIZATION: basic ${basic}`, "credential.helper="] : [];
-  const r = await git(cwd, ["push", "--progress", "-u", "origin", `HEAD:refs/heads/${branch}`], { onOutput, extraConfig });
+  const r = await git(cwd, ["push", "--progress", "-u", remote, `HEAD:refs/heads/${branch}`], { onOutput, extraConfig });
   if (r.code !== 0) {
     const msg = r.stderr.trim();
     if (/GH013|push protection|secret/i.test(msg)) {
       throw new DeployError("GitHub rejected the push because it found a secret in your commits", "Remove the secret from the commit (git reset --soft HEAD~1), or allow it from the link GitHub printed above.");
     }
     if (/rejected|non-fast-forward|fetch first/i.test(msg)) {
-      throw new DeployError(`The remote ${branch} has commits you don't have locally`, `Run: git pull --rebase origin ${branch}  then deploy again.`);
+      throw new DeployError(`The remote ${branch} has commits you don't have locally`, `Run: git pull --rebase ${remote} ${branch}  then deploy again.`);
     }
     throw new DeployError("git push failed", msg);
   }

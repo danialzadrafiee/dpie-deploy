@@ -49,13 +49,33 @@ async function githubSection(cwd: string, global: GlobalConfig, d: Draft) {
     log.success("Initialized git repository");
   }
 
-  const remote = await git.remoteUrl(cwd);
-  const parsed = remote ? git.parseGithubRemote(remote) : null;
-  if (parsed && (await spin("Checking GitHub repo", () => repoExists(token, parsed.owner, parsed.repo), (ok) => (ok ? `GitHub repo: ${parsed.owner}/${parsed.repo}` : `${parsed.owner}/${parsed.repo} not found on GitHub`)))) {
-    d.github = { ...parsed, branch };
-    return;
+  // Look at every remote, not just "origin" (some repos call it "main", "github", ...).
+  const remotes = await git.githubRemotes(cwd);
+  const repos = [...new Map(remotes.map((r) => [`${r.owner}/${r.repo}`.toLowerCase(), r])).values()];
+  let parsed: git.GithubRemote | null = repos[0] ?? null;
+  if (repos.length > 1) {
+    const pick = await ask.select(
+      "This folder has several GitHub remotes. Which repo should be deployed?",
+      repos.map((r) => ({ value: r.name, label: `${r.owner}/${r.repo}`, hint: `remote "${r.name}"` })),
+      repos.find((r) => d.github && r.owner === d.github.owner && r.repo === d.github.repo)?.name,
+    );
+    parsed = repos.find((r) => r.name === pick)!;
   }
-  if (remote && !parsed) log.warn(`origin points to ${remote}, which is not GitHub`);
+  if (parsed) {
+    const p = parsed;
+    const exists = await spin(
+      "Checking GitHub repo",
+      () => repoExists(token, p.owner, p.repo),
+      (ok) => (ok ? `GitHub repo: ${p.owner}/${p.repo} ${pc.dim(`(remote "${p.name}")`)}` : `${p.owner}/${p.repo} not found on GitHub (or this token can't see it)`),
+    );
+    if (exists) {
+      d.github = { owner: p.owner, repo: p.repo, branch };
+      return;
+    }
+  } else {
+    const other = await git.remoteUrl(cwd);
+    if (other) log.warn(`origin points to ${other}, which is not GitHub`);
+  }
 
   const create = await ask.confirm(`Create a GitHub repository for this project under ${user}?`, true);
   if (!create) throw new Error("A GitHub repository is required to deploy");
@@ -63,7 +83,8 @@ async function githubSection(cwd: string, global: GlobalConfig, d: Draft) {
   const isPrivate = await ask.confirm("Private repository?", true);
   const repo = await spin(`Creating ${user}/${name}`, () => createRepo(token, name, isPrivate), (r) => `Created github.com/${r.full_name}`);
   const [owner, repoName] = repo.full_name.split("/") as [string, string];
-  await git.setRemote(cwd, httpsRemote(owner, repoName));
+  const remoteName = await git.remoteFor(cwd, owner, repoName);
+  log.info(`Added git remote "${remoteName}" → ${httpsRemote(owner, repoName)}`);
   d.github = { owner, repo: repoName, branch };
 }
 

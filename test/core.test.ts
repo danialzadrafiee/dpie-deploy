@@ -55,6 +55,20 @@ test("github remote parsing", () => {
   expect(parseGithubRemote("https://github.com/a/b.git")).toEqual({ owner: "a", repo: "b" });
   expect(parseGithubRemote("git@github.com:a/b-c.git")).toEqual({ owner: "a", repo: "b-c" });
   expect(parseGithubRemote("https://gitlab.com/a/b")).toBeNull();
+  expect(parseGithubRemote("git@github-work:a/b.git")).toEqual({ owner: "a", repo: "b" });
+  expect(parseGithubRemote("ssh://git@github.com/a/b.git")).toEqual({ owner: "a", repo: "b" });
+});
+
+test("finds GitHub remotes under any name, and adds one when missing", async () => {
+  const { githubRemotes, remoteFor } = await import("../src/git.ts");
+  const dir = fixture({});
+  Bun.spawnSync(["git", "init", "-q", "-b", "main"], { cwd: dir });
+  Bun.spawnSync(["git", "remote", "add", "main", "https://github.com/a/b.git"], { cwd: dir });
+  Bun.spawnSync(["git", "remote", "add", "origin", "https://gitlab.com/x/y.git"], { cwd: dir });
+  expect((await githubRemotes(dir)).map((r) => r.name)).toEqual(["main"]);
+  expect(await remoteFor(dir, "a", "b")).toBe("main");
+  expect(await remoteFor(dir, "a", "new")).toBe("github"); // origin is taken by gitlab
+  expect((await githubRemotes(dir)).map((r) => `${r.name}:${r.repo}`).sort()).toEqual(["github:new", "main:b"]);
 });
 
 test("commit message and shell quoting", () => {

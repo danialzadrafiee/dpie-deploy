@@ -67,8 +67,9 @@ export async function runDeploy(cwd: string, cfg: ProjectConfig, opts: { yes: bo
     const sha = await git.headSha(cwd);
     const alreadyOnVercel = vercel ? !!(await vercel.deploymentForCommit(cfg.vercel!.projectId!, sha)) : false;
 
-    const out = section(`git push → ${cfg.github.owner}/${cfg.github.repo} (${branch})`);
-    await git.push(cwd, branch, ghToken, (c) => out.write(c));
+    const remoteName = await git.remoteFor(cwd, cfg.github.owner, cfg.github.repo);
+    const out = section(`git push ${remoteName} → ${cfg.github.owner}/${cfg.github.repo} (${branch})`);
+    await git.push(cwd, remoteName, branch, ghToken, (c) => out.write(c));
     out.flush();
     log.success(`Pushed ${sha.slice(0, 7)} to GitHub`);
 
