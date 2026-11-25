@@ -1,0 +1,27 @@
+{
+  "name": "dpie-deploy",
+  "version": "0.1.0",
+  "description": "Zero-config deploy CLI: detects your stack and ships it to Vercel (via GitHub) or your own server over SSH.",
+  "type": "module",
+  "private": true,
+  "bin": { "deploy": "src/index.ts" },
+  "scripts": {
+    "dev": "bun src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "build": "bun build src/index.ts --compile --minify --outfile dist/deploy"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/node": "^26.6.10",
+    "@types/ssh2": "^1.15.6"
+  },
+  "peerDependencies": {
+    "typescript": "^7"
+  },
+  "dependencies": {
+    "@clack/prompts": "^1.9.0",
+    "picocolors": "^1.1.1",
+    "ssh-config": "^5.3.1",
+    "ssh2": "^1.17.0"
+  }
+}
