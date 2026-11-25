@@ -1,6 +1,6 @@
 {
   "name": "dpie-deploy",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Zero-config deploy CLI: detects your stack and ships it to Vercel (via GitHub) or your own server over SSH.",
   "type": "module",
   "private": true,

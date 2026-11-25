@@ -5,7 +5,7 @@ import { askEnv } from "./env.ts";
 import * as git from "./git.ts";
 import { createRepo, httpsRemote, repoExists, resolveGithubToken } from "./github.ts";
 import { defaultKey, sshConfigHosts } from "./ssh.ts";
-import { cliCurrentTeam, resolveVercelToken, Vercel } from "./vercel.ts";
+import { cliCurrentTeam, resolveVercelToken, Vercel, type VercelProject } from "./vercel.ts";
 import { ask, log, p, pc, spin } from "./ui.ts";
 
 type Draft = Partial<ProjectConfig> & { name: string };
@@ -91,39 +91,81 @@ async function githubSection(cwd: string, global: GlobalConfig, d: Draft) {
 async function vercelSection(global: GlobalConfig, d: Draft) {
   const { token, user } = await resolveVercelToken(global, { interactive: true });
   const teams = await new Vercel(token).teams();
-  let teamId: string | null = d.vercel?.teamId ?? cliCurrentTeam();
-  if (teams.length) {
+  const slugOf = (teamId: string | null) => teams.find((t) => t.id === teamId)?.slug ?? null;
+  const scopeLabel = (teamId: string | null) => slugOf(teamId) ?? `${user} (personal)`;
+
+  // Search every scope (teams + personal) before asking anything.
+  type Hit = { project: VercelProject; teamId: string | null; linked: boolean };
+  const scopes: (string | null)[] = [...teams.map((t) => t.id), null];
+  const { owner, repo } = d.github!;
+  const hits = await spin(
+    "Looking for this project on Vercel",
+    async () => {
+      const found = new Map<string, Hit>();
+      const add = (h: Hit) => {
+        // On newer accounts "personal" and the default team return the same project; keep the team one.
+        const prev = found.get(h.project.id);
+        if (!prev || (prev.teamId === null && h.teamId !== null) || (!prev.linked && h.linked)) found.set(h.project.id, h);
+      };
+      await Promise.all(
+        scopes.map(async (teamId) => {
+          const v = new Vercel(token, teamId);
+          for (const project of await v.findProjectsByRepo(owner, repo)) add({ project, teamId, linked: true });
+        }),
+      );
+      if (!found.size) {
+        // Not connected to GitHub, but maybe it exists under the same name (deployed with the CLI before).
+        const names = [...new Set([d.name, repo])];
+        await Promise.all(
+          scopes.flatMap((teamId) =>
+            names.map(async (name) => {
+              const project = await new Vercel(token, teamId).getProject(name);
+              if (project) add({ project, teamId, linked: false });
+            }),
+          ),
+        );
+      }
+      return [...found.values()];
+    },
+    (hs) =>
+      hs.length === 1
+        ? `Found Vercel project ${hs[0]!.project.name} ${pc.dim(`(${scopeLabel(hs[0]!.teamId)}${hs[0]!.linked ? "" : ", not connected to GitHub yet, will be connected on deploy"})`)}`
+        : hs.length
+          ? `Found ${hs.length} Vercel projects for this repo`
+          : "No Vercel project for this repo yet, it will be created on first deploy",
+  );
+
+  let hit: Hit | null = hits[0] ?? null;
+  if (hits.length > 1) {
+    const id = await ask.select(
+      "Several Vercel projects match this repo. Which one is this?",
+      hits.map((h) => ({ value: h.project.id, label: h.project.name, hint: scopeLabel(h.teamId) })),
+      hits.find((h) => h.project.id === d.vercel?.projectId)?.project.id,
+    );
+    hit = hits.find((h) => h.project.id === id)!;
+  }
+
+  let teamId: string | null;
+  if (hit) {
+    teamId = hit.teamId;
+  } else if (teams.length) {
+    // Only needed when a new project has to be created.
+    const current = d.vercel?.teamId ?? cliCurrentTeam();
     const choice = await ask.select(
-      "Vercel scope",
-      [{ value: "__personal", label: `${user} (personal)` }, ...teams.map((t) => ({ value: t.id, label: t.name, hint: t.slug }))],
-      teamId && teams.some((t) => t.id === teamId) ? teamId : "__personal",
+      "Which Vercel scope should the new project be created in?",
+      [...teams.map((t) => ({ value: t.id, label: t.name, hint: t.slug })), { value: "__personal", label: `${user} (personal)` }],
+      current && teams.some((t) => t.id === current) ? current : teams[0]!.id,
     );
     teamId = choice === "__personal" ? null : choice;
   } else {
     teamId = null;
   }
-  const v = new Vercel(token, teamId);
-  const linked = d.github
-    ? await spin(
-        "Looking for a Vercel project linked to this repo",
-        () => v.findProjectsByRepo(d.github!.owner, d.github!.repo),
-        (ps) => (ps.length ? `Found ${ps.map((p) => p.name).join(", ")} on Vercel` : "No Vercel project yet, it will be created on first deploy"),
-      )
-    : [];
-  let existing = linked[0] ?? null;
-  if (linked.length > 1) {
-    const id = await ask.select(
-      "This repo is connected to several Vercel projects. Which one is this?",
-      linked.map((p) => ({ value: p.id, label: p.name })),
-      linked.find((p) => p.id === d.vercel?.projectId)?.id,
-    );
-    existing = linked.find((p) => p.id === id)!;
-  }
+
   d.vercel = {
-    projectId: existing?.id,
-    projectName: existing?.name ?? d.vercel?.projectName ?? d.name,
+    projectId: hit?.project.id,
+    projectName: hit?.project.name ?? d.vercel?.projectName ?? d.name,
     teamId,
-    teamSlug: teams.find((t) => t.id === teamId)?.slug ?? null,
+    teamSlug: slugOf(teamId),
   };
 }
 
